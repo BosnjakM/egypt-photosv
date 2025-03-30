@@ -111,6 +111,7 @@
             text-align: center;
             color: #4a4a4a;
             padding: 2rem;
+            max-width: 80%;
         }
         .loading-icon {
             width: 120px;
@@ -133,6 +134,26 @@
             font-weight: bold;
             margin-top: 20px;
             text-shadow: 2px 2px 4px rgba(255, 255, 255, 0.5);
+        }
+        .progress-container {
+            width: 100%;
+            max-width: 300px;
+            margin: 20px auto;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 10px;
+            padding: 3px;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 20px;
+            background: #34a853;
+            border-radius: 8px;
+            transition: width 0.3s ease;
+        }
+        .progress-text {
+            margin-top: 10px;
+            font-size: 1rem;
+            color: #4a4a4a;
         }
         @keyframes sun-spin {
             from { transform: translate(-50%, -50%) rotate(0deg); }
@@ -210,7 +231,10 @@
         <div class="loading-content">
             <div class="loading-icon"></div>
             <div class="loading-text">Fotos werden hochgeladen...</div>
-            <div class="desert-bg"></div>
+            <div class="progress-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <div class="progress-text" id="progress-text">0 von 0 Fotos hochgeladen</div>
         </div>
     </div>
 
@@ -219,38 +243,70 @@
         const submitButton = document.getElementById('submit-button');
         const uploadForm = document.getElementById('upload-form');
         const loadingAnimation = document.getElementById('loading-animation');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
         
         fileInput.addEventListener('change', function() {
             if (this.files.length > 0) {
                 submitButton.style.display = 'block';
+                submitButton.textContent = `${this.files.length} Fotos hochladen`;
             } else {
                 submitButton.style.display = 'none';
             }
         });
 
-        uploadForm.addEventListener('submit', function(e) {
-            e.preventDefault();
-            loadingAnimation.classList.add('active');
+        async function uploadFiles(files) {
+            const totalFiles = files.length;
+            let uploadedFiles = 0;
 
-            const formData = new FormData(this);
-            
-            fetch('/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                // Keep showing the animation for at least 8 seconds
-                setTimeout(() => {
-                    loadingAnimation.classList.remove('active');
-                    window.location.reload();
-                }, 8000);
-            })
-            .catch(error => {
-                console.error('Error:', error);
+            // Show loading animation
+            loadingAnimation.classList.add('active');
+            progressText.textContent = `0 von ${totalFiles} Fotos hochgeladen`;
+            progressBar.style.width = '0%';
+
+            // Process files in batches of 10
+            const batchSize = 10;
+            for (let i = 0; i < files.length; i += batchSize) {
+                const batch = Array.from(files).slice(i, i + batchSize);
+                const formData = new FormData();
+                
+                batch.forEach(file => {
+                    formData.append('files[]', file);
+                });
+
+                try {
+                    const response = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        uploadedFiles += batch.length;
+                        const progress = (uploadedFiles / totalFiles) * 100;
+                        progressBar.style.width = `${progress}%`;
+                        progressText.textContent = `${uploadedFiles} von ${totalFiles} Fotos hochgeladen`;
+                    } else {
+                        throw new Error('Upload failed');
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert(`Fehler beim Hochladen der Fotos ${i + 1} bis ${i + batch.length}`);
+                }
+            }
+
+            // Keep animation for a moment after completion
+            setTimeout(() => {
                 loadingAnimation.classList.remove('active');
-                alert('Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.');
-            });
+                window.location.reload();
+            }, 2000);
+        }
+
+        uploadForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const files = fileInput.files;
+            if (files.length > 0) {
+                await uploadFiles(files);
+            }
         });
     </script>
 </body>

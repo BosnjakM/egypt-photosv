@@ -6,10 +6,11 @@ from datetime import datetime
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'  # Change this to a secure secret key
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1GB max-size
 
 # Configuration
 UPLOAD_FOLDER = '/tmp/uploads'  # Use /tmp for Vercel
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic', 'heif'}
 PASSWORD = 'Egypten2025'
 
 # Ensure upload folder exists
@@ -39,24 +40,40 @@ def logout():
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'authenticated' not in session:
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Not authenticated'}), 401
     
     if 'files[]' not in request.files:
         return jsonify({'error': 'No file part'}), 400
     
     files = request.files.getlist('files[]')
     uploaded_files = []
+    errors = []
     
     for file in files:
         if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
-            filename = timestamp + filename
-            file_path = os.path.join(UPLOAD_FOLDER, filename)
-            file.save(file_path)
-            uploaded_files.append(filename)
+            try:
+                filename = secure_filename(file.filename)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
+                filename = timestamp + filename
+                file_path = os.path.join(UPLOAD_FOLDER, filename)
+                file.save(file_path)
+                uploaded_files.append(filename)
+            except Exception as e:
+                errors.append(f"Error uploading {file.filename}: {str(e)}")
+        else:
+            errors.append(f"Invalid file type for {file.filename}")
     
-    return jsonify({'success': True, 'files': uploaded_files})
+    if errors:
+        return jsonify({
+            'success': False,
+            'errors': errors,
+            'uploaded': uploaded_files
+        }), 400
+    
+    return jsonify({
+        'success': True,
+        'files': uploaded_files
+    })
 
 @app.route('/download')
 def download_all():
