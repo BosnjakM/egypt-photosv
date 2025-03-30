@@ -1,182 +1,142 @@
-from flask import Flask, render_template, request, send_file, redirect, url_for, session, jsonify
+from flask import Flask, request, render_template, send_file, redirect, url_for, session, jsonify
 import os
 from werkzeug.utils import secure_filename
+from functools import wraps
 import zipfile
-from datetime import datetime
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import io
-import json
+import logging
+from PIL import Image
 
 app = Flask(__name__)
-app.secret_key = 'your-secret-key-here'  # Change this to a secure secret key
-app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1GB max-size
+app.secret_key = os.urandom(24)  # Sicherer Secret Key für Sessions
 
-# Configuration
-TEMP_FOLDER = '/tmp/uploads'  # Temporary folder for processing
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic', 'heif'}
-PASSWORD = 'Egypten2025'
+# Logging konfigurieren
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Ensure temp folder exists
-os.makedirs(TEMP_FOLDER, exist_ok=True)
+# Konfiguration
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic', 'HEIC'}
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
-# Google Drive setup
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
-# Load credentials from environment variable
-try:
-    creds_dict = json.loads(os.environ.get('GOOGLE_CREDENTIALS', '{}'))
-    credentials = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    drive_service = build('drive', 'v3', credentials=credentials)
-    FOLDER_ID = os.environ.get('GOOGLE_DRIVE_FOLDER_ID', '')
-except Exception as e:
-    print(f"Error setting up Google Drive: {e}")
-    drive_service = None
-    FOLDER_ID = None
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max-body-size
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def upload_to_drive(file_path, filename):
-    """Upload a file to Google Drive and return the file ID"""
-    try:
-        file_metadata = {
-            'name': filename,
-            'parents': [FOLDER_ID]
-        }
-        media = MediaFileUpload(file_path, resumable=True)
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
-        return file.get('id')
-    except Exception as e:
-        print(f"Error uploading to Drive: {e}")
-        return None
-
-def download_from_drive(file_id):
-    """Download a file from Google Drive"""
-    try:
-        request = drive_service.files().get_media(fileId=file_id)
-        file = io.BytesIO()
-        downloader = MediaIoBaseDownload(file, request)
-        done = False
-        while done is False:
-            status, done = downloader.next_chunk()
-        return file
-    except Exception as e:
-        print(f"Error downloading from Drive: {e}")
-        return None
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'logged_in' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 @app.route('/')
+@login_required
 def index():
-    if 'authenticated' not in session:
-        return render_template('login.html')
     return render_template('index.html')
 
-@app.route('/login', methods=['POST'])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.form['password'] == PASSWORD:
-        session['authenticated'] = True
-        return redirect(url_for('index'))
-    return render_template('login.html', error='Incorrect password')
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password == os.getenv('PHOTO_PASSWORD', 'test123'):
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+        return render_template('login.html', error=True)
+    return render_template('login.html', error=False)
 
 @app.route('/logout')
 def logout():
-    session.pop('authenticated', None)
-    return redirect(url_for('index'))
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
 
 @app.route('/upload', methods=['POST'])
+@login_required
 def upload_file():
-    if 'authenticated' not in session:
-        return jsonify({'error': 'Not authenticated'}), 401
-    
-    if not drive_service:
-        return jsonify({'error': 'Google Drive service not available'}), 500
-    
     if 'files[]' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
+        return jsonify({'success': False, 'errors': ['Keine Dateien gefunden']}), 400
     
     files = request.files.getlist('files[]')
-    uploaded_files = []
+    if not files:
+        return jsonify({'success': False, 'errors': ['Keine Dateien ausgewählt']}), 400
+
     errors = []
-    
+    success_count = 0
+
     for file in files:
-        if file and allowed_file(file.filename):
+        if file and file.filename:
+            if not allowed_file(file.filename):
+                errors.append(f'Ungültiges Dateiformat: {file.filename}')
+                continue
+
             try:
                 filename = secure_filename(file.filename)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
-                filename = timestamp + filename
-                temp_path = os.path.join(TEMP_FOLDER, filename)
+                # Überprüfe Dateigröße
+                file.seek(0, os.SEEK_END)
+                size = file.tell()
+                file.seek(0)
                 
-                # Save temporarily
-                file.save(temp_path)
+                if size > MAX_FILE_SIZE:
+                    errors.append(f'Datei zu groß: {filename}')
+                    continue
+
+                # Speichere die Datei
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(filepath)
                 
-                # Upload to Google Drive
-                file_id = upload_to_drive(temp_path, filename)
-                if file_id:
-                    uploaded_files.append({'name': filename, 'id': file_id})
-                else:
-                    errors.append(f"Failed to upload {filename} to Google Drive")
-                
-                # Clean up temp file
-                os.remove(temp_path)
+                # Versuche das Bild zu öffnen um sicherzustellen, dass es valide ist
+                try:
+                    with Image.open(filepath) as img:
+                        img.verify()
+                    success_count += 1
+                except Exception as e:
+                    os.remove(filepath)  # Lösche die ungültige Datei
+                    errors.append(f'Ungültiges Bildformat: {filename}')
+                    logger.error(f'Fehler beim Validieren von {filename}: {str(e)}')
+
             except Exception as e:
-                errors.append(f"Error uploading {file.filename}: {str(e)}")
-        else:
-            errors.append(f"Invalid file type for {file.filename}")
-    
-    if errors:
-        return jsonify({
-            'success': False,
-            'errors': errors,
-            'uploaded': uploaded_files
-        }), 400
-    
-    return jsonify({
-        'success': True,
-        'files': uploaded_files
-    })
+                errors.append(f'Fehler beim Hochladen: {filename}')
+                logger.error(f'Fehler beim Hochladen von {filename}: {str(e)}')
 
-@app.route('/download')
+    response = {
+        'success': len(errors) == 0,
+        'uploaded': success_count,
+        'errors': errors if errors else None
+    }
+    
+    return jsonify(response)
+
+@app.route('/download_all')
+@login_required
 def download_all():
-    if 'authenticated' not in session:
-        return redirect(url_for('index'))
-    
-    if not drive_service:
-        return jsonify({'error': 'Google Drive service not available'}), 500
-    
-    try:
-        # Get all files in the folder
-        results = drive_service.files().list(
-            q=f"'{FOLDER_ID}' in parents",
-            pageSize=1000,
-            fields="files(id, name)"
-        ).execute()
-        files = results.get('files', [])
-        
-        # Create a zip file
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-            for file in files:
-                file_content = download_from_drive(file['id'])
-                if file_content:
-                    zip_file.writestr(file['name'], file_content.getvalue())
-        
-        zip_buffer.seek(0)
-        return send_file(
-            zip_buffer,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name='all_photos.zip'
-        )
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    if not os.path.exists(UPLOAD_FOLDER):
+        return "Keine Fotos vorhanden", 404
 
-# For Vercel, we need to expose the app
-app.debug = True
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(UPLOAD_FOLDER):
+            for file in files:
+                if allowed_file(file):
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, UPLOAD_FOLDER)
+                    try:
+                        zf.write(file_path, arcname)
+                    except Exception as e:
+                        logger.error(f'Fehler beim Hinzufügen von {file} zum ZIP: {str(e)}')
+
+    memory_file.seek(0)
+    return send_file(
+        memory_file,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name='familienfotos.zip'
+    )
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5003, debug=True) 
+    app.run(debug=True, host='0.0.0.0') 

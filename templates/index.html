@@ -19,8 +19,6 @@
             padding: 2rem;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            position: relative;
-            overflow: hidden;
         }
         h1 {
             color: #1a73e8;
@@ -33,8 +31,6 @@
             gap: 1rem;
             max-width: 400px;
             margin: 0 auto;
-            position: relative;
-            z-index: 2;
         }
         .button {
             padding: 1rem;
@@ -45,8 +41,6 @@
             text-align: center;
             text-decoration: none;
             transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
         }
         .upload-button {
             background: linear-gradient(45deg, #e6b980, #eacda3);
@@ -87,8 +81,6 @@
             width: 100%;
             text-align: center;
         }
-
-        /* Loading Animation */
         .loading-overlay {
             position: fixed;
             top: 0;
@@ -129,12 +121,6 @@
             transform: translate(-50%, -50%);
             animation: sun-spin 8s linear infinite;
         }
-        .loading-text {
-            font-size: 1.5rem;
-            font-weight: bold;
-            margin-top: 20px;
-            text-shadow: 2px 2px 4px rgba(255, 255, 255, 0.5);
-        }
         .progress-container {
             width: 100%;
             max-width: 300px;
@@ -155,6 +141,11 @@
             font-size: 1rem;
             color: #4a4a4a;
         }
+        .error-text {
+            color: #ea4335;
+            margin-top: 10px;
+            font-weight: bold;
+        }
         @keyframes sun-spin {
             from { transform: translate(-50%, -50%) rotate(0deg); }
             to { transform: translate(-50%, -50%) rotate(360deg); }
@@ -163,57 +154,17 @@
             0%, 100% { transform: translateY(0); }
             50% { transform: translateY(-20px); }
         }
-
-        /* Desert Background */
-        .desert-bg {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            width: 100%;
-            height: 40%;
-            background: #e6b980;
-            border-radius: 50% 50% 0 0;
-            transform-origin: bottom;
-            z-index: -1;
-        }
-
-        /* Responsive Design */
-        @media (max-width: 600px) {
-            body {
-                padding: 1rem;
-            }
-            .container {
-                padding: 1rem;
-            }
-            .button {
-                padding: 0.8rem;
-                font-size: 1rem;
-            }
-            .loading-text {
-                font-size: 1.2rem;
-            }
-            .loading-icon {
-                width: 100px;
-                height: 100px;
-            }
-            .loading-icon::before {
-                font-size: 60px;
-            }
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Familienfotos</h1>
         <div class="button-container">
-            <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data" id="upload-form">
+            <form id="upload-form">
                 <input type="file" id="file-input" name="files[]" multiple accept="image/*">
                 <label for="file-input" class="button upload-button file-label">
                     📸 Fotos auswählen und hochladen
                 </label>
-                <button type="submit" class="button upload-button" style="display: none;" id="submit-button">
-                    Fotos hochladen
-                </button>
             </form>
             
             <a href="{{ url_for('download_all') }}" class="button download-button">
@@ -226,7 +177,6 @@
         </div>
     </div>
 
-    <!-- Loading Animation -->
     <div class="loading-overlay" id="loading-animation">
         <div class="loading-content">
             <div class="loading-icon"></div>
@@ -235,37 +185,30 @@
                 <div class="progress-bar" id="progress-bar"></div>
             </div>
             <div class="progress-text" id="progress-text">0 von 0 Fotos hochgeladen</div>
+            <div class="error-text" id="error-text"></div>
         </div>
     </div>
 
     <script>
         const fileInput = document.getElementById('file-input');
-        const submitButton = document.getElementById('submit-button');
         const uploadForm = document.getElementById('upload-form');
         const loadingAnimation = document.getElementById('loading-animation');
         const progressBar = document.getElementById('progress-bar');
         const progressText = document.getElementById('progress-text');
-        
-        fileInput.addEventListener('change', function() {
-            if (this.files.length > 0) {
-                submitButton.style.display = 'block';
-                submitButton.textContent = `${this.files.length} Fotos hochladen`;
-            } else {
-                submitButton.style.display = 'none';
-            }
-        });
+        const errorText = document.getElementById('error-text');
 
         async function uploadFiles(files) {
             const totalFiles = files.length;
             let uploadedFiles = 0;
+            let errors = [];
 
-            // Show loading animation
             loadingAnimation.classList.add('active');
             progressText.textContent = `0 von ${totalFiles} Fotos hochgeladen`;
             progressBar.style.width = '0%';
+            errorText.textContent = '';
 
-            // Process files in batches of 10
-            const batchSize = 10;
+            // Process files in smaller batches
+            const batchSize = 5;
             for (let i = 0; i < files.length; i += batchSize) {
                 const batch = Array.from(files).slice(i, i + batchSize);
                 const formData = new FormData();
@@ -280,32 +223,61 @@
                         body: formData
                     });
 
-                    if (response.ok) {
+                    let result;
+                    try {
+                        result = await response.json();
+                    } catch (e) {
+                        // Wenn die Antwort kein JSON ist, erstelle eine Fehlermeldung
+                        result = {
+                            success: false,
+                            errors: [`Server-Fehler: ${response.status} ${response.statusText}`]
+                        };
+                    }
+
+                    if (response.ok && result.success) {
                         uploadedFiles += batch.length;
-                        const progress = (uploadedFiles / totalFiles) * 100;
-                        progressBar.style.width = `${progress}%`;
-                        progressText.textContent = `${uploadedFiles} von ${totalFiles} Fotos hochgeladen`;
                     } else {
-                        throw new Error('Upload failed');
+                        if (result.errors) {
+                            errors = errors.concat(result.errors);
+                        } else {
+                            errors.push(`Fehler beim Batch ${i + 1} bis ${i + batch.length}`);
+                        }
+                    }
+
+                    const progress = (uploadedFiles / totalFiles) * 100;
+                    progressBar.style.width = `${progress}%`;
+                    progressText.textContent = `${uploadedFiles} von ${totalFiles} Fotos hochgeladen`;
+                    
+                    if (errors.length > 0) {
+                        errorText.textContent = `Fehler: ${errors.join(', ')}`;
                     }
                 } catch (error) {
                     console.error('Error:', error);
-                    alert(`Fehler beim Hochladen der Fotos ${i + 1} bis ${i + batch.length}`);
+                    errors.push(`Netzwerkfehler beim Batch ${i + 1} bis ${i + batch.length}: ${error.message}`);
+                    errorText.textContent = `Fehler: ${errors.join(', ')}`;
                 }
+
+                // Add a small delay between batches
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
 
-            // Keep animation for a moment after completion
+            // Keep the overlay visible for a moment after completion
             setTimeout(() => {
-                loadingAnimation.classList.remove('active');
-                window.location.reload();
+                if (errors.length === 0) {
+                    loadingAnimation.classList.remove('active');
+                    window.location.reload();
+                } else {
+                    // Bei Fehlern: Zeige die Fehlermeldung für länger an
+                    setTimeout(() => {
+                        loadingAnimation.classList.remove('active');
+                    }, 5000);
+                }
             }, 2000);
         }
 
-        uploadForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-            const files = fileInput.files;
-            if (files.length > 0) {
-                await uploadFiles(files);
+        fileInput.addEventListener('change', async function(e) {
+            if (this.files.length > 0) {
+                await uploadFiles(this.files);
             }
         });
     </script>
